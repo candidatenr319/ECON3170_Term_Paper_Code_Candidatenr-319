@@ -1,0 +1,433 @@
+---
+title: "Development of the Norwegian Maritime Shipping Industry from 2012 to 2021"
+output: 
+  flexdashboard::flex_dashboard:
+    orientation: columns
+    vertical_layout: fill
+---
+
+```{r setup, include=FALSE}
+library(flexdashboard)
+library(ggmap)
+library(fhimaps)
+library(normentR)
+library(leaflet)
+library(sf)
+library(plotly)
+
+
+#### Importing Packages ####
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(purrr)
+library(zoo)
+library(stringr)
+library(magrittr)
+library(splitstackshape)
+library(here)
+library(caret)
+library(glmnet)
+library(rpart.plot)
+
+
+#### Importing Data ####
+
+# Daily Interest Rates
+dir <- read_delim("Data/Daily_Policy_Rates.csv",";", 
+                  escape_double = FALSE, trim_ws = TRUE)
+
+# Keeping only the Sight Deposit Rate 
+keyinterest <- dir %>%
+  filter(TENOR %in% c("SD"))%>%
+  select(TIME_PERIOD, OBS_VALUE)
+
+# Daily Exchange Rates: NOKTWI
+Exchange_NOK_TWI <- read_delim("Data/Exchange_NOK_TWI.csv",
+                               ";", escape_double = TRUE, trim_ws = TRUE)
+
+# Sum of Norwegian Maritime Transport : source Statistics Norway
+Norwegian_Maritime_Transport <- read_delim("Data/Norwegian_Maritime_Transport.csv", 
+                                           ";", escape_double = FALSE, trim_ws = TRUE, 
+                                           skip = 2, locale = locale(encoding = "ISO-8859-1"))
+
+# Finding the position of city names with norwegian characters to remove
+
+#Finding position of names of names with Norwegian characters
+names(Norwegian_Maritime_Transport) 
+
+oldcitynames = c(11, 23, 25, 26, 31, 34, 37)
+newcitynames = c("Tonsberg", "Floro", "Maloy (Nordfjord)", "Aleseund", "Bronnoysund (Broennoey)", "Bodo", "Tromso")
+
+Norwegian_Maritime_Transport <- Norwegian_Maritime_Transport %>% 
+  rename_at(vars(all_of(oldcitynames)), ~newcitynames) %>% 
+  mutate('Norway (whole country)' = rowSums(Filter(is.numeric, Norwegian_Maritime_Transport))) %>% 
+  filter(!quarter %in% c("2021K1", "2021K2", "2021K3", "2021K4"))
+
+NMT2 <- Norwegian_Maritime_Transport %>% 
+  pivot_longer(cols = -c(commodity, flag, `loaded/unloaded`, `domestic/foreign`, quarter, contents), names_to = "Location", values_to = "Tonnes")
+
+
+
+
+
+
+
+
+
+  
+
+
+
+
+#### Wrangling Data ####
+
+# Creating new Tibble from NMT2
+shippingbyquarter <- NMT2 %>% 
+  select(c(`loaded/unloaded`, `domestic/foreign`, quarter, Location, Tonnes, commodity)) %>% 
+  filter(Location %in% c("Norway (whole country)"))
+
+  
+h <- as.data.frame(shippingbyquarter)
+
+for (i in h$quarter){
+  i = str_replace(h$quarter, "K", "Q")
+  i = sub("\\s+$", "", gsub('(.{4})', '\\1 ', i))
+} 
+
+quarterStart <- as.Date(as.yearqtr(i, format = "%Y Q%q"))
+quarterEnd <- as.Date(as.yearqtr(i, format = "%Y Q%q"), frac = 1)
+
+shippingbyquarter2 <- shippingbyquarter %>% 
+  add_column(`Date start` = quarterStart) %>% 
+  add_column(`Date end` = quarterEnd)
+
+Exchange_NOK_TWI <- Exchange_NOK_TWI %>% 
+  mutate(quarter = as.yearqtr(TIME_PERIOD, format = "%Y-%m-%d")) %>% 
+  rename(`Currency Value` = OBS_VALUE) %>% 
+  rename(Dates = TIME_PERIOD)
+
+
+foreignexport0 <- shippingbyquarter2 %>% 
+  filter(`domestic/foreign` %in% c("Foreign"), `loaded/unloaded` %in% c("Loaded") ) %>% 
+  select(c(`loaded/unloaded`, `domestic/foreign`, Tonnes, `Date start`, commodity)) %>% 
+  group_by(`loaded/unloaded`, `domestic/foreign`, `Date start`, commodity) %>% 
+  summarise(Tonnes = sum(Tonnes), .groups = 'drop') %>% 
+  mutate(quarter = as.yearqtr(`Date start`, format = "%Y-%m-%d"))
+         
+
+ForeignExport <- keyinterest %>% 
+  mutate(quarter = as.yearqtr(`TIME_PERIOD`, format = "%Y-%m-%d")) %>% 
+  inner_join(foreignexport0, by='quarter') %>%
+  inner_join(Exchange_NOK_TWI, by='quarter') %>% 
+  select(c(TIME_PERIOD, OBS_VALUE, quarter, Tonnes, `Currency Value`, commodity))
+  
+
+keyinterest <- keyinterest %>% 
+  mutate(quarter = as.yearqtr(TIME_PERIOD, format = "%Y-%m-%d"))
+
+
+
+create_table <- function(cargo, route, df) {
+  df %>% 
+    filter(`domestic/foreign` %in% c(route), `loaded/unloaded` %in% c(cargo) ) %>% 
+    select(c(`loaded/unloaded`, `domestic/foreign`, Tonnes, `Date start`)) %>% 
+    group_by(`loaded/unloaded`, `domestic/foreign`, `Date start`) %>% 
+    summarise(Tonnes = sum(Tonnes), .groups = 'drop') %>% 
+    mutate(quarter = as.yearqtr(`Date start`, format = "%Y-%m-%d")) %>% 
+    inner_join(keyinterest, by='quarter') %>%
+    inner_join(Exchange_NOK_TWI, by='quarter') %>% 
+    select(c(OBS_VALUE, quarter, Tonnes, `Currency Value`)) 
+    
+}
+
+ForeignImport <- create_table("Unloaded", "Foreign", shippingbyquarter2)
+DomesticBuy <- create_table("Unloaded", "Domestic", shippingbyquarter2)
+DomesticSell <- create_table("Loaded", "Domestic", shippingbyquarter2)
+  
+
+  
+
+
+
+
+#### Presenting Data ####
+
+createGraph <- function(df){
+  interestgraph <- ggplot(df, aes(x = quarter))+
+    geom_line (aes(y = Tonnes/1000), color = "#295278")+
+    geom_point(aes(y = Tonnes/1000), color = "#295278")+
+    geom_line(aes(y = OBS_VALUE*1000), color = "#CB2583")+
+    geom_point(aes(y = OBS_VALUE*1000), color = "#CB2583")+
+    
+    
+    
+
+    scale_y_continuous(
+      name = "Deadweight tonnage in kilo tonnes (kt)",
+      breaks = scales::pretty_breaks(n=16),
+      sec.axis = sec_axis(~./1000, name="Interest Rates (%)", scales::pretty_breaks(n=16))
+      
+      )+
+    ggthemes::theme_economist(
+      base_family = "sans",
+      horizontal = TRUE,
+      dkpanel = TRUE
+    )+
+    ggthemes::scale_color_economist()+
+    #facet_grid(. ~ am )+
+    ggthemes::theme_economist(dkpanel=TRUE)+
+    scale_x_yearqtr(name= "Quarter", format = '%Y Q%q', n= 24)+
+    theme(
+      axis.title.y = element_text( size=9, margin = margin(t= 0, r= 20, b= 0, l =  0), color = "#295278"),
+      axis.title.y.right = element_text( size = 9, margin = margin(t=0, r=0, b=0, l=20), angle = -90, color = "#CB2583"),
+      axis.title.x = element_text(size = 9, margin = margin(t=20, r=0, b=0, l=0)),
+      axis.text.x = element_text( angle = 90, vjust = 0.5, hjust = 1.5, size = 7),
+      axis.text = element_text(size = 7),
+      #axis.text.y.right = element_text(size = 7, color = "#CB2583")
+    )+
+    
+    
+    ggtitle(paste0("Interest rates on", gsub("([A-Z])", " \\1", deparse(substitute(df)))), 
+            paste0("quaterly from 2012 - 2021"))
+    
+  
+  currencygraph <- ggplot(df, aes(x = quarter))+
+    geom_line (aes(y = Tonnes/1000), color = "#295278")+
+    geom_point(aes(y = Tonnes/1000), color = "#295278")+
+    geom_line(aes(y = `Currency Value`*28), color = "#90353B")+
+    
+    scale_y_continuous(
+      name = "Deadweight tonnage in kilo tonnes (kt)",
+      breaks = scales::pretty_breaks(n=16),
+      sec.axis = sec_axis(~./28, name="NOK to Trade Weight Exchange Rate (in NOK)", scales::pretty_breaks(n=16))
+      
+    )+
+    ggthemes::theme_economist(
+      base_family = "sans",
+      horizontal = TRUE,
+      dkpanel = TRUE
+    )+
+    ggthemes::scale_color_economist()+
+    #facet_grid(. ~ am )+
+    ggthemes::theme_economist(dkpanel=TRUE)+
+    scale_x_yearqtr(name= "Quarter", format = '%Y Q%q', n= 24)+
+    theme(
+      axis.title.y = element_text( size=9, margin = margin(t= 0, r= 20, b= 0, l =  0), color = "#295278"),
+      axis.title.y.right = element_text( size = 9, margin = margin(t=0, r=0, b=0, l=20), angle = -90, color = "#90353B"),
+      axis.title.x = element_text(size = 9, margin = margin(t=20, r=0, b=0, l=0)),
+      axis.text.x = element_text( angle = 90, vjust = 0.5, hjust = 1.5, size = 7),
+      axis.text = element_text(size = 7),
+      #axis.text.y.right = element_text(size = 7, color = "#CB2583")
+    )+
+    
+    
+    ggtitle(paste0("Currency Exchange Rates on", gsub("([A-Z])", " \\1", deparse(substitute(df)))), 
+            paste0("quaterly from 2012 - 2021"))
+  
+    
+}
+
+#createGraph(DomesticSell)
+##createGraph(DomesticBuy)
+#createGraph(ForeignExport)
+#createGraph(ForeignImport)
+
+#create2Graph <- function(df){
+#  ggplot(df, aes(x= OBS_VALUE, y = Tonnes, col = as.factor(commodity)))+
+#    geom_point()
+#}
+
+#create3Graph <- function(df){
+#  ggplot(df, aes(x= `Currency Value`, y = Tonnes, col = as.factor(commodity)))+
+#    geom_point()
+#}
+
+#create2Graph(ForeignExport)
+#create3Graph(ForeignExport)
+
+
+#### Regression ####
+
+# Linear regression for Foreign Export
+#reg1 = lm(Tonnes ~ OBS_VALUE, data = ForeignExport)
+#lm(Tonnes ~ `Currency Value`, data = ForeignExport)
+#lm(Tonnes ~ OBS_VALUE + `Currency Value`, data = ForeignExport)
+#plot(1 and 2)
+#summary("PUT CODES INSIDE HERE")
+
+
+#predict3d::ggPredict(reg1)
+
+# Linear regression for Foreign Import
+#lm(Tonnes ~ OBS_VALUE, data = ForeignImport)
+#lm(Tonnes ~ `Currency Value`, data = ForeignImport)
+#lm(Tonnes ~ OBS_VALUE + `Currency Value`, data = ForeignImport)
+#plot(1 and 2)
+#summary("PUT CODES INSIDE HERE")
+
+
+#fit <- rpart(Tonnes ~ OBS_VALUE + `Currency Value`,method="anova",data = ForeignExport) 
+#rpart.plot(fit,box.palette="GnBu",space = 0,     nn=TRUE, tweak = 1.2)
+#plotcp(fit)
+#pfit<- prune(fit, cp=1)
+
+# Correlation 
+#cor(ForeignExport$OBS_VALUE, ForeignExport$`Currency Value`)
+
+
+
+#### Dashboard ####
+
+# DASHBOARD HTML WEBPAGE AS ".HTML" FILE. DASHBOARD ".RMD" FILE IN FOLDER
+# WHEN RUNNING ".RMD" FILE LEAVE THIS ".R" FILE OPEN AND LIBRARIES LOADED AND DATA LOADED ASWELL
+# AS THE R-MARKDOWN FILE USES THE SAME DATA.
+
+
+#Finding unique values to create categories
+#unique(NMT2$commodity)
+
+
+#Creating table for loaded (export)
+loaded <- NMT2 %>% 
+  select(commodity, `loaded/unloaded`, `domestic/foreign`, quarter, Location, Tonnes) %>% 
+  filter(`loaded/unloaded` %in% c("Loaded")) %>% 
+  select(commodity, `domestic/foreign`, quarter, Location, Tonnes) %>%
+  mutate(type = case_when(commodity %in% c("Agricultural products, forestry products, fishing products", "Food products, beverages, tobaco and animal fodder",  "Other manufactured goods, grouped goods and other goods")  ~ "Consume", 
+                          commodity %in% c("Coal, oil and chemicals and chemical products", "Metal ores, stone, sand, gravel, clay, salt, cement, lime, fertilizer, manufactured construction materials") ~ "Investment")
+  ) %>% 
+  select(type, quarter, Location, Tonnes) %>% 
+  group_by( quarter, Location, type) %>% 
+  summarise(Tonnes = sum(Tonnes), .groups = 'drop') 
+
+
+#Creating a table for unloaded (import)
+unloaded <- NMT2 %>% 
+  select(commodity, `loaded/unloaded`, `domestic/foreign`, quarter, Location, Tonnes) %>% 
+  filter(`loaded/unloaded` %in% c("Unloaded")) %>% 
+  select(commodity, `domestic/foreign`, quarter, Location, Tonnes) %>%
+  mutate(type = case_when(commodity %in% c("Agricultural products, forestry products, fishing products", "Food products, beverages, tobaco and animal fodder",  "Other manufactured goods, grouped goods and other goods")  ~ "Consume", 
+                          commodity %in% c("Coal, oil and chemicals and chemical products", "Metal ores, stone, sand, gravel, clay, salt, cement, lime, fertilizer, manufactured construction materials") ~ "Investment")
+  ) %>% 
+  select(type, quarter, Location, Tonnes) %>% 
+  group_by(quarter, Location, type) %>% 
+  summarise(Tonnes = sum(Tonnes), .groups = 'drop') 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```
+
+Column {data-width=650}
+-----------------------------------------------------------------------
+
+### MAP OVERVIEW OF NORWAYS SHIPPING PATTERNS OVER TIME
+
+```{r}
+map_df <- fhimaps::norway_lau2_map_b2020_default_dt %>% 
+  glimpse()
+
+ggplot(map_df, aes(x = long, y = lat, group = group, fill = location_code)) + 
+  geom_polygon()
+
+
+municip_names <- fhidata::norway_locations_b2020 %>% 
+  distinct(municip_code, municip_name)
+
+print(municip_names)
+
+
+municip_colors <- setNames(normentR::norment_pal("batlow")(nrow(municip_names)),
+                          nm = municip_names$municip_name)
+
+
+map_df %>% 
+  left_join(municip_names, by = c("location_code" = "municip_code")) %>% 
+  ggplot(aes(x = long, y = lat, fill = municip_name, group = group)) + 
+  geom_polygon(key_glyph = "point") + 
+  labs(x = NULL,
+       y = NULL,
+       fill = NULL) +
+  scale_x_continuous(labels = scales::label_number(suffix = "\u00b0W")) +
+  scale_y_continuous(labels = scales::label_number(suffix = "\u00b0N")) + 
+  scale_fill_manual(values = municip_colors,
+                    guide = guide_legend(override.aes = list(shape = 21, size = 4))) +
+  coord_map(projection = "conic", lat0 = 40) + 
+  theme_minimal() +
+  theme(legend.position = c(0.9,0.2),
+        legend.text = element_text(size = 5),
+        legend.key.height = unit(10,"pt"),
+        legend.background = element_rect(fill = "white", color = "transparent"))
+
+
+
+##SF
+map_sf <- fhimaps::norway_lau2_map_b2020_default_sf %>%
+  sf::st_as_sf() %>% 
+  left_join(municip_names, by = c("location_code" = "municip_code"))
+
+map_sf %>% 
+  leaflet() %>% 
+  addPolygons(
+    fillColor = unname(municip_colors),
+    weight = 0.1,
+    opacity = 1,
+    fillOpacity = 0.75,
+    highlightOptions = highlightOptions(
+      color = "#333", bringToFront = TRUE,
+      weight = 2, opacity = 1)
+  )
+
+map_sf
+
+```
+
+Column {data-width=350}
+-----------------------------------------------------------------------
+
+### Interest Rate over Time 
+
+```{r}
+
+interestovertime <- ggplot(ForeignExport, aes(x = TIME_PERIOD))+
+  geom_line(aes(y = OBS_VALUE), color = "#CB2583")+
+  geom_point(aes(y = OBS_VALUE), color = "#CB2583")+
+  scale_y_continuous(
+      name = "Key Interest Rate (%)",
+      breaks = scales::pretty_breaks()
+      )+
+  ggthemes::theme_economist(
+      base_family = "sans",
+      horizontal = TRUE,
+      dkpanel = TRUE
+    )+
+  ggthemes::scale_color_economist()+
+  ggtitle(paste0("Interest rate quaterly"))
+
+plotly::ggplotly(interestovertime)
+
+```
+
+### CONVERSION RATE NOK - TWI over Time
+
+```{r}
+
+twiovertime <- ggplot(Exchange_NOK_TWI, aes(x = Dates))+
+  geom_line(aes(y = `Currency Value`))
+
+plotly::ggplotly(twiovertime)
+```
+
